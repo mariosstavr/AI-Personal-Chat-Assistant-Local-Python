@@ -1,158 +1,194 @@
 import sqlite3
 import tkinter as tk
 from tkinter import messagebox
-from dotenv import load_dotenv
 import os
 import threading
 import pystray
 from PIL import Image
 import subprocess
-import requests
+import datetime
+import time
 
-os.environ["OLLAMA_HOST"] = "10.0.0.208:11434"
+# --- Set the Ollama host to Local ---
+os.environ["OLLAMA_HOST"] = "127.0.0.1:11434"
 
-
-def ask_ollama_http(query):
-    url = "10.0.0.208:11434/api/v1/run/deepseek-r1"  # Adjust this endpoint if needed
-    data = {"query": query}
-    try:
-        response = requests.post(url, json=data, timeout=30)
-        response.raise_for_status()
-        return response.text
-    except requests.RequestException as e:
-        print("HTTP Request Error:", e)
-        return "Request failed."
+# --- Function to call Ollama with Mistral ---
 def ask_ollama(query):
     try:
         process = subprocess.Popen(
-            ["ollama", "run", "deepseek-r1"],
+            ["ollama", "run", "mistral"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True
+            encoding="utf-8",
+            errors="replace"
         )
         stdout, stderr = process.communicate(query, timeout=30)
         if stderr:
             print("Ollama Error:", stderr)
-        return stdout
+        return stdout.strip() if stdout else "No response from AI."
     except subprocess.TimeoutExpired:
         process.kill()
         return "Request timed out."
 
-
-# --- Initialize the User Database ---
+# --- Database Initialization ---
 def init_db():
-    conn = sqlite3.connect("users.db")
-    c = conn.cursor()
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE,
-            password TEXT
-        )
-    """)
-    conn.commit()
-    conn.close()
+    with sqlite3.connect("users.db") as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE,
+                password TEXT
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS reminders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                message TEXT,
+                remind_time TEXT,
+                notified INTEGER DEFAULT 0
+            )
+        """)
 
-init_db()
+# --- Reminder Functions ---
+def add_reminder(user_id, message, remind_time):
+    with sqlite3.connect("users.db") as conn:
+        conn.execute("INSERT INTO reminders (user_id, message, remind_time) VALUES (?, ?, ?)", (user_id, message, remind_time))
+
+def check_reminders(chat_window, user_id):
+    while True:
+        now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+        with sqlite3.connect("users.db") as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT id, message FROM reminders WHERE user_id = ? AND remind_time = ? AND notified = 0", (user_id, now))
+            reminders = cursor.fetchall()
+            
+            for reminder in reminders:
+                chat_window.after(0, chat_window.update_chat, f"Reminder: {reminder[1]}", "System")
+                cursor.execute("UPDATE reminders SET notified = 1 WHERE id = ?", (reminder[0],))
+        time.sleep(60)  # Check every minute
 
 # --- User Authentication Functions ---
 def validate_login(username, password):
-    conn = sqlite3.connect("users.db")
-    c = conn.cursor()
-    c.execute("SELECT id FROM users WHERE username = ? AND password = ?", (username, password))
-    result = c.fetchone()
-    conn.close()
-    return result[0] if result else None
+    with sqlite3.connect("users.db") as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM users WHERE username=? AND password=?", (username, password))
+        return cursor.fetchone()
 
 def register_user(username, password):
-    conn = sqlite3.connect("users.db")
-    c = conn.cursor()
     try:
-        c.execute("INSERT INTO users (username, password) VALUES (?, ?)", (username, password))
-        conn.commit()
+        with sqlite3.connect("users.db") as conn:
+            conn.execute("INSERT INTO users (username, password) VALUES (?, ?)", (username, password))
+        return True
     except sqlite3.IntegrityError:
-        messagebox.showerror("Registration Error", "Username already exists!")
-    finally:
-        conn.close()
+        return False
 
 # --- Chat Window ---
-def open_chat(user_id):
-    chat_window = tk.Tk()
-    chat_window.title("myStirixis Assistant")
-    chat_window.geometry("400x500")
-
-    # Chat history (read-only)
-    chat_history = tk.Text(chat_window, wrap=tk.WORD, state="disabled")
-    chat_history.pack(fill=tk.BOTH, expand=True)
-
-    # User input field
-    user_input = tk.Entry(chat_window)
-    user_input.pack(fill=tk.X, side=tk.LEFT, expand=True, padx=5, pady=5)
-
-    # Send button function
-    def send_message():
-        query = user_input.get()
-        user_input.delete(0, tk.END)
-        chat_history.config(state="normal")
-        chat_history.insert(tk.END, f"You: {query}\n\n")
-        chat_history.config(state="disabled")
+class ChatWindow(tk.Tk):
+    def __init__(self, user_id):
+        super().__init__()
+        self.user_id = user_id
+        self.title("myStirixis Assistant")
+        self.geometry("400x500")
+        self.protocol('WM_DELETE_WINDOW', self.withdraw)
         
-        # Get Ollama response in a separate thread to avoid freezing the UI
-        def get_ollama_response():
-            response = ask_ollama(query)
-            chat_history.config(state="normal")
-            chat_history.insert(tk.END, f"AI: {response}\n\n")
-            chat_history.config(state="disabled")
-            chat_history.see(tk.END)  # Auto-scroll to bottom
-        threading.Thread(target=get_ollama_response).start()
-
-    send_button = tk.Button(chat_window, text="Send", command=send_message)
-    send_button.pack(side=tk.RIGHT, padx=5, pady=5)
-
-    chat_window.mainloop()
-
-# --- Login / Registration Window ---
-def open_login():
-    login_window = tk.Tk()
-    login_window.title("Login")
-    login_window.geometry("300x200")
-
-    tk.Label(login_window, text="Username:").pack(pady=5)
-    username_entry = tk.Entry(login_window)
-    username_entry.pack(pady=5)
-
-    tk.Label(login_window, text="Password:").pack(pady=5)
-    password_entry = tk.Entry(login_window, show="*")
-    password_entry.pack(pady=5)
-
-    # Attempt login
-    def attempt_login():
-        username = username_entry.get()
-        password = password_entry.get()
-        user_id = validate_login(username, password)
-        if user_id:
-            messagebox.showinfo("Login Successful", f"Welcome, {username}!")
-            login_window.destroy()  # Close login window
-            open_chat(user_id)      # Open chat window for this user
+        self.chat_history = tk.Text(self, wrap=tk.WORD, state="disabled")
+        self.chat_history.pack(fill=tk.BOTH, expand=True)
+        self.chat_history.tag_configure("user_tag", background="lightgrey", foreground="black", font=("Helvetica", 12))
+        
+        input_frame = tk.Frame(self)
+        input_frame.pack(fill=tk.X, padx=5, pady=5)
+        self.user_input = tk.Entry(input_frame)
+        self.user_input.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.user_input.bind("<Return>", lambda e: self.send_message())
+        
+        self.send_btn = tk.Button(input_frame, text="📤", command=self.send_message)
+        self.send_btn.pack(side=tk.RIGHT)
+        
+        threading.Thread(target=check_reminders, args=(self, user_id), daemon=True).start()
+    
+    def update_chat(self, message, sender):
+        self.chat_history.config(state="normal")
+        if sender == "You":
+            self.chat_history.insert(tk.END, f"{sender}: {message}\n\n", "user_tag")
         else:
-            messagebox.showerror("Login Failed", "Invalid username or password")
+            self.chat_history.insert(tk.END, f"{sender}: {message}\n\n")
+        self.chat_history.config(state="disabled")
+        self.chat_history.see(tk.END)
 
-    # Attempt registration
-    def attempt_register():
-        username = username_entry.get()
-        password = password_entry.get()
-        if username and password:
-            register_user(username, password)
-            messagebox.showinfo("Registration", "User registered successfully. Please log in.")
+    def send_message(self):
+        query = self.user_input.get().strip()
+        if not query:
+            return
+        self.user_input.delete(0, tk.END)
+        self.send_btn.config(state="disabled")
+        self.update_chat(query, "You")
+
+        def get_response():
+            if "remind me" in query.lower():
+                self.set_reminder(query)
+                response = "Reminder set!"
+            else:
+                response = ask_ollama(query)
+            self.after(0, self.update_chat, response, "AI")
+            self.after(0, self.send_btn.config, {"state": "normal"})
+
+        threading.Thread(target=get_response, daemon=True).start()
+
+    def set_reminder(self, query):
+        now = datetime.datetime.now()
+        if "in" in query:
+            try:
+                time_parts = [int(s) for s in query.split() if s.isdigit()]
+                minutes = time_parts[0] if time_parts else 1
+                remind_time = (now + datetime.timedelta(minutes=minutes)).strftime("%Y-%m-%d %H:%M")
+            except:
+                return self.update_chat("Could not set reminder. Format: 'Remind me in 10 minutes'", "System")
         else:
-            messagebox.showerror("Registration Failed", "Please enter both username and password.")
+            remind_time = now.strftime("%Y-%m-%d") + " " + query.split()[-1]
+        message = query.replace("remind me", "").strip()
+        add_reminder(self.user_id, message, remind_time)
 
-    tk.Button(login_window, text="Login", command=attempt_login).pack(pady=5)
-    tk.Button(login_window, text="Register", command=attempt_register).pack(pady=5)
+# --- Login Window ---
+class LoginWindow(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.title("Login")
+        self.geometry("300x200")
 
-    login_window.mainloop()
+        tk.Label(self, text="Username:").pack(pady=5)
+        self.username_entry = tk.Entry(self)
+        self.username_entry.pack(pady=5)
+
+        tk.Label(self, text="Password:").pack(pady=5)
+        self.password_entry = tk.Entry(self, show="*")
+        self.password_entry.pack(pady=5)
+
+        btn_frame = tk.Frame(self)
+        btn_frame.pack(pady=10)
+
+        tk.Button(btn_frame, text="Login", command=self.attempt_login).pack(side=tk.LEFT, padx=5)
+        tk.Button(btn_frame, text="Register", command=self.attempt_register).pack(side=tk.RIGHT, padx=5)
+
+    def attempt_login(self):
+        username = self.username_entry.get()
+        password = self.password_entry.get()
+        if user := validate_login(username, password):
+            self.destroy()
+            ChatWindow(user[0]).mainloop()
+        else:
+            messagebox.showerror("Error", "Invalid credentials")
+
+    def attempt_register(self):  # <-- Move this inside the class
+        username = self.username_entry.get()
+        password = self.password_entry.get()
+        if register_user(username, password):
+            messagebox.showinfo("Success", "User registered successfully. You can now log in.")
+        else:
+            messagebox.showerror("Error", "Username already exists. Please choose another.")
 
 # --- Main Entry Point ---
 if __name__ == "__main__":
-    open_login()
+    init_db()
+    LoginWindow().mainloop()
