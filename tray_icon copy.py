@@ -9,14 +9,33 @@ import subprocess
 import datetime
 import time
 
-# --- Set the Ollama host to Local ---
-os.environ["OLLAMA_HOST"] = "127.0.0.1:11434"
+# ----------------- USER CONFIGURATION -----------------
+# Set the path where Ollama is installed on your system (Windows/Linux/macOS)
+OLLAMA_DIR = r"C:\Path\To\Ollama"  # <-- CHANGE THIS to your Ollama directory
 
-# --- Function to call Ollama with Mistral ---
+# Set the Ollama host (default is localhost)
+OLLAMA_HOST = "127.0.0.1:11434"  # <-- CHANGE IF NEEDED
+
+# Path to your system tray icon image
+ICON_PATH = "icon.png"  # <-- CHANGE TO YOUR ICON FILE PATH
+
+# Model to use
+OLLAMA_MODEL = "mistral"  # <-- CHANGE MODEL IF NEEDED
+
+# ------------------------------------------------------
+
+# --- Add Ollama to PATH ---
+os.environ["PATH"] = OLLAMA_DIR + ";" + os.environ.get("PATH", "")
+os.environ["OLLAMA_HOST"] = OLLAMA_HOST
+
+# --- Function to call Ollama ---
 def ask_ollama(query):
+    """
+    Sends a query to Ollama AI model and returns the response.
+    """
     try:
         process = subprocess.Popen(
-            ["ollama", "run", "mistral"],
+            ["ollama", "run", OLLAMA_MODEL],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -33,6 +52,9 @@ def ask_ollama(query):
 
 # --- Database Initialization ---
 def init_db():
+    """
+    Initialize the SQLite database and create tables if not exists.
+    """
     with sqlite3.connect("users.db") as conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS users (
@@ -53,17 +75,28 @@ def init_db():
 
 # --- Reminder Functions ---
 def add_reminder(user_id, message, remind_time):
+    """
+    Add a reminder to the database.
+    """
     with sqlite3.connect("users.db") as conn:
-        conn.execute("INSERT INTO reminders (user_id, message, remind_time) VALUES (?, ?, ?)", (user_id, message, remind_time))
+        conn.execute(
+            "INSERT INTO reminders (user_id, message, remind_time) VALUES (?, ?, ?)",
+            (user_id, message, remind_time)
+        )
 
 def check_reminders(chat_window, user_id):
+    """
+    Periodically check for due reminders and display them in the chat.
+    """
     while True:
         now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
         with sqlite3.connect("users.db") as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT id, message FROM reminders WHERE user_id = ? AND remind_time = ? AND notified = 0", (user_id, now))
+            cursor.execute(
+                "SELECT id, message FROM reminders WHERE user_id = ? AND remind_time = ? AND notified = 0",
+                (user_id, now)
+            )
             reminders = cursor.fetchall()
-            
             for reminder in reminders:
                 chat_window.after(0, chat_window.update_chat, f"Reminder: {reminder[1]}", "System")
                 cursor.execute("UPDATE reminders SET notified = 1 WHERE id = ?", (reminder[0],))
@@ -89,7 +122,7 @@ class ChatWindow(tk.Tk):
     def __init__(self, user_id):
         super().__init__()
         self.user_id = user_id
-        self.title("myStirixis Assistant")
+        self.title("ThinkBot Assistant")
         self.geometry("400x500")
         self.protocol('WM_DELETE_WINDOW', self.withdraw)
         
@@ -140,6 +173,7 @@ class ChatWindow(tk.Tk):
         now = datetime.datetime.now()
         if "in" in query:
             try:
+                # Extract numbers from query as minutes
                 time_parts = [int(s) for s in query.split() if s.isdigit()]
                 minutes = time_parts[0] if time_parts else 1
                 remind_time = (now + datetime.timedelta(minutes=minutes)).strftime("%Y-%m-%d %H:%M")
@@ -154,7 +188,7 @@ class ChatWindow(tk.Tk):
 class LoginWindow(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Login")
+        self.title("ThinkBot Login")
         self.geometry("300x200")
 
         tk.Label(self, text="Username:").pack(pady=5)
@@ -180,9 +214,12 @@ class LoginWindow(tk.Tk):
         else:
             messagebox.showerror("Error", "Invalid credentials")
 
-    def attempt_register(self):  # <-- Move this inside the class
+    def attempt_register(self):
         username = self.username_entry.get()
         password = self.password_entry.get()
+        if not username or not password:
+            messagebox.showerror("Error", "All fields are required")
+            return
         if register_user(username, password):
             messagebox.showinfo("Success", "User registered successfully. You can now log in.")
         else:
