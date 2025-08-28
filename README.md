@@ -1,4 +1,4 @@
-This is a Tkinter-based AI chat assistant named myStirixis Assistant, which integrates user authentication, a chat interface, and a system tray icon.
+This is a Tkinter-based AI chat assistant named ThinkBot Assistant, which integrates user authentication, a chat interface, and a system tray icon.
 It connects to Ollama, an AI model, to generate responses and uses an SQLite database to store user credentials.
 
 Key Features:
